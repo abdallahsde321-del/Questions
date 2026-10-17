@@ -2,9 +2,8 @@ name: YouTube Live Questions Monitor
 
 on:
   schedule:
-    # إعادة تشغيل البوت كل 5 ساعات ليعمل بشكل مستمر 24/7
     - cron: '0 */5 * * *'
-  workflow_dispatch: # يتيح لك تشغيله يدوياً في أي وقت بضغطة زر
+  workflow_dispatch:
 
 jobs:
   run-bot:
@@ -26,7 +25,8 @@ jobs:
 
       - name: Run Bot
         env:
+          PYTHONUNBUFFERED: '1'
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           YOUTUBE_CHANNEL_HANDLE: ${{ secrets.YOUTUBE_CHANNEL_HANDLE }}
-        run: python main.py
+        run: python -u main.py
