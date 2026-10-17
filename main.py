@@ -34,7 +34,37 @@ def fetch_video_id(target):
     return None
 
 def get_innertube_continuation(video_id):
-    """استخراج رمز التتبع للشات المباشر عبر InnerTube"""
+    """استخراج رمز الشات عبر InnerTube Android API لتجاوز حظر صفحات الويب"""
+    next_url = "https://www.youtube.com/youtubei/v1/next"
+    payload = {
+        "context": {
+            "client": {
+                "clientName": "ANDROID",
+                "clientVersion": "19.09.37"
+            }
+        },
+        "videoId": video_id
+    }
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        res = requests.post(next_url, json=payload, headers=headers, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            contents = data.get("contents", {}).get("singleColumnWatchNextResults", {}).get("conversationBar", {}).get("liveChatRenderer", {})
+            conts = contents.get("continuations", [])
+            for c in conts:
+                for k in ["reloadContinuationData", "timedContinuationData", "invalidationContinuationData"]:
+                    if k in c and "continuation" in c[k]:
+                        return c[k]["continuation"], "", "19.09.37"
+    except Exception as e:
+        print(f"⚠️ خطأ أثناء طلب InnerTube Android API: {e}")
+
+    # محاولة احتياطية عبر صفحة الشات العادية
     url = f"https://www.youtube.com/live_chat?v={video_id}"
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
@@ -45,14 +75,12 @@ def get_innertube_continuation(video_id):
             ver_match = re.search(r'"clientVersion":"([^"]+)"', text)
             client_ver = ver_match.group(1) if ver_match else "2.20240301.00.00"
             conts = re.findall(r'"continuation":"([^"]+)"', text)
-            continuation = None
             for c in conts:
                 if len(c) > 20:
-                    continuation = c
-                    break
-            return continuation, api_key, client_ver
+                    return c, api_key, client_ver
     except Exception as e:
         print(f"⚠️ خطأ جلب بيانات InnerTube: {e}")
+
     return None, "", "2.20240301.00.00"
 
 def get_google_api_chat_id(video_id):
@@ -89,19 +117,19 @@ def monitor_innertube(video_id, max_end_time, processed_ids, initial_continuatio
     """مراقبة الشات عبر نظام InnerTube الاحتياطي"""
     print(f"🟢 تم الربط بشات البث عبر InnerTube ({video_id})! جاري التقاط الرقم 100...")
     innertube_url = f"https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key={api_key}" if api_key else "https://www.youtube.com/youtubei/v1/live_chat/get_live_chat"
-    chat_headers = HEADERS.copy()
-    chat_headers.update({
+    chat_headers = {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
         "Content-Type": "application/json",
-        "X-YouTube-Client-Name": "1",
+        "X-YouTube-Client-Name": "3",
         "X-YouTube-Client-Version": client_ver
-    })
+    }
     session = requests.Session()
     continuation = initial_continuation
     last_heartbeat = time.time()
 
     while time.time() < max_end_time and continuation:
         payload = {
-            "context": {"client": {"clientName": "WEB", "clientVersion": client_ver}},
+            "context": {"client": {"clientName": "ANDROID", "clientVersion": client_ver}},
             "continuation": continuation
         }
         try:
@@ -187,7 +215,7 @@ def monitor_google_api(video_id, live_chat_id, max_end_time, processed_ids):
             time.sleep(5)
 
 def main():
-    print("👀 بدء تشغيل نظام المراقبة الهجين...")
+    print("👀 بدء تشغيل نظام المراقبة المطور...")
     start_time = time.time()
     max_duration = 5.5 * 3600
     processed_ids = deque(maxlen=5000)
@@ -202,13 +230,11 @@ def main():
         video_id = fetch_video_id(target)
         if video_id:
             print(f"🎯 تم التقاط Video ID: {video_id}")
-            # 1. المحاولة الأولى عبر Google API
             live_chat_id = get_google_api_chat_id(video_id)
             if live_chat_id:
                 monitor_google_api(video_id, live_chat_id, start_time + max_duration, processed_ids)
             else:
-                # 2. التبديل التلقائي لـ InnerTube في حال تعذر الحصول على Chat ID من Google API
-                print("🔄 لم نتمكن من الحصول على Chat ID من Google API، جاري الانتقال التلقائي إلى نظام InnerTube...")
+                print("🔄 جاري الحصول على رمز الشات عبر InnerTube Android API...")
                 continuation, api_key, client_ver = get_innertube_continuation(video_id)
                 if continuation:
                     monitor_innertube(video_id, start_time + max_duration, processed_ids, continuation, api_key, client_ver)
