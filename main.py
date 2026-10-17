@@ -10,14 +10,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 YOUTUBE_CHANNEL_HANDLE = os.getenv("YOUTUBE_CHANNEL_HANDLE")
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept-Language": "ar,en-US;q=0.9,en;q=0.8"
-}
-
-# استخدام عميل ANDROID لتجاوز قيود وحظر السيرفرات السحابية
-INNER_TUBE_CLIENT = {
-    "clientName": "ANDROID",
-    "clientVersion": "19.09.37"
 }
 
 def get_live_video_id(channel_handle):
@@ -53,40 +47,26 @@ def get_live_video_id(channel_handle):
         
     return None
 
-def get_initial_continuation(video_id):
-    """جلب رمز الشات الأولي عبر InnerTube ANDROID API"""
-    url = "https://www.youtube.com/youtubei/v1/next"
-    payload = {
-        "context": {"client": INNER_TUBE_CLIENT},
-        "videoId": video_id
-    }
+def get_chat_init_data(video_id):
+    """جلب رمز الشات ومفتاح API مباشرة من صفحة شات البث لتجاوز حظر السيرفرات"""
+    url = f"https://www.youtube.com/live_chat?v={video_id}"
     try:
-        res = requests.post(url, json=payload, headers=HEADERS, timeout=10)
+        res = requests.get(url, headers=HEADERS, timeout=10)
         if res.status_code == 200:
-            data = res.json()
-            try:
-                contents = data["contents"]["singleColumnWatchNextResults"]["conversationBar"]["liveChatRenderer"]
-                conts = contents.get("continuations", [])
-                for c in conts:
-                    for k in ["reloadContinuationData", "timedContinuationData", "invalidationContinuationData"]:
-                        if k in c and "continuation" in c[k]:
-                            return c[k]["continuation"]
-            except KeyError:
-                pass
-    except Exception as e:
-        print(f"⚠️ خطأ جلب رمز الشات من API: {e}")
+            key_match = re.search(r'"INNERTUBE_API_KEY":"([^"]+)"', res.text)
+            api_key = key_match.group(1) if key_match else ""
 
-    # محاولة احتياطية من سورس الصفحة
-    try:
-        res = requests.get(f"https://www.youtube.com/watch?v={video_id}", headers=HEADERS, timeout=10)
-        matches = re.findall(r'"continuation":"([^"]+)"', res.text)
-        for m in matches:
-            if len(m) > 20:
-                return m
-    except Exception as e:
-        print(f"⚠️ خطأ جلب رمز الشات من الصفحة: {e}")
+            ver_match = re.search(r'"clientVersion":"([^"]+)"', res.text)
+            client_ver = ver_match.group(1) if ver_match else "2.20240301.00.00"
 
-    return None
+            cont_match = re.search(r'"continuation":"([^"]+)"', res.text)
+            continuation = cont_match.group(1) if cont_match else None
+
+            return continuation, api_key, client_ver
+    except Exception as e:
+        print(f"⚠️ خطأ أثناء جلب صفحة live_chat: {e}")
+    
+    return None, "", "2.20240301.00.00"
 
 def send_to_telegram(message):
     """إرسال نص السؤال فقط إلى التلجرام"""
@@ -106,20 +86,26 @@ def send_to_telegram(message):
 
 def monitor_live_chat(video_id, max_end_time, processed_ids):
     """قراءة الشات المباشر باستمرار مع طباعة حية وتأكيد الاستماع"""
-    continuation = get_initial_continuation(video_id)
+    continuation, api_key, client_ver = get_chat_init_data(video_id)
+    
     if not continuation:
-        print("⚠️ لم نتمكن من الحصول على رمز الشات الحي (قد يكون الشات مغلقاً في هذا البث).")
+        print("⚠️ لم نتمكن من الحصول على رمز الشات الحي (قد يكون الشات معطلاً أو مغلقاً في هذا البث).")
         return
 
-    print("🟢 تم الاتصال بشات البث المباشر بنجاح! جاري المراقبة واستقبال الأسئلة...")
+    print("🟢 تم جلب رمز الشات المباشر بنجاح! جاري المراقبة واستقبال الأسئلة...")
     
-    innertube_url = "https://www.youtube.com/youtubei/v1/live_chat/get_live_chat"
+    innertube_url = f"https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key={api_key}" if api_key else "https://www.youtube.com/youtubei/v1/live_chat/get_live_chat"
     session = requests.Session()
     last_heartbeat = time.time()
 
     while time.time() < max_end_time and continuation:
         payload = {
-            "context": {"client": INNER_TUBE_CLIENT},
+            "context": {
+                "client": {
+                    "clientName": "WEB",
+                    "clientVersion": client_ver
+                }
+            },
             "continuation": continuation
         }
         
@@ -149,14 +135,12 @@ def monitor_live_chat(video_id, max_end_time, processed_ids):
                     author = renderer.get("authorName", {}).get("simpleText", "مستخدم")
 
                     if msg_text:
-                        print(f"💬 [شات حقيقي]: {author}: {msg_text}")
+                        print(f"💬 [شات]: {author}: {msg_text}")
                         
-                        # التقاط أي رسالة تحتوي على علامة استفهام
                         if "?" in msg_text or "؟" in msg_text:
                             print(f"🎯 تم التقاط سؤال جديد: {msg_text}")
                             send_to_telegram(msg_text)
 
-            # تحديث رمز الجلب القادم
             continuations = live_chat.get("continuations", [])
             continuation = None
             if continuations:
@@ -166,7 +150,6 @@ def monitor_live_chat(video_id, max_end_time, processed_ids):
                         continuation = cont_data[key]["continuation"]
                         break
 
-            # طباعة رسالة تأكيد كل 30 ثانية لتتبع حالة المراقبة
             if time.time() - last_heartbeat > 30:
                 print("📡 البوت متصل ويستمع لشات البث المباشر الآن...")
                 last_heartbeat = time.time()
