@@ -1,6 +1,7 @@
 import os
 import re
 import time
+from collections import deque
 import pytchat
 import requests
 
@@ -9,7 +10,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 YOUTUBE_CHANNEL_HANDLE = os.getenv("YOUTUBE_CHANNEL_HANDLE")
 
 def get_live_video_id(channel_handle):
-    """استخراج ID البث المباشر وتجاوز قيود يوتيوب"""
+    """التحقق الصارم من وجود بث مباشر يعمل حالياً فقط"""
     handle = channel_handle if channel_handle.startswith("@") else f"@{channel_handle}"
     url = f"https://www.youtube.com/{handle}/live"
     
@@ -23,11 +24,13 @@ def get_live_video_id(channel_handle):
         session = requests.Session()
         response = session.get(url, headers=headers, timeout=15)
         
-        match = re.search(r'"videoId":"([^"]+)"', response.text)
-        if match:
-            video_id = match.group(1)
-            if '"isLive":true' in response.text or 'LIVE' in response.text or '"style":"LIVE"' in response.text:
-                return video_id
+        # التأكد أن البث مباشر حقيقي وحالي (وليس مسجل أو قادم)
+        is_live_now = '"isLiveNow":true' in response.text or ('"isLive":true' in response.text and '"isUpcoming":true' not in response.text)
+        
+        if is_live_now:
+            match = re.search(r'"videoId":"([^"]+)"', response.text)
+            if match:
+                return match.group(1)
     except Exception as e:
         print(f"⚠️ خطأ أثناء الفحص: {e}")
     
@@ -48,11 +51,11 @@ def send_to_telegram(author, message):
     try:
         res = requests.post(url, json=payload)
         if res.status_code == 200:
-            print(f"✅ تم الإرسال بنجاح للتلجرام: [{author}]")
+            print(f"✅ تم الإرسال للتلجرام: [{author}]")
         else:
-            print(f"❌ خطأ من تلجرام (رمز {res.status_code}): {res.text}")
+            print(f"❌ خطأ من تلجرام: {res.text}")
     except Exception as e:
-        print(f"❌ خطأ في الاتصال بتلجرام: {e}")
+        print(f"❌ خطأ في الاتصال: {e}")
 
 def main():
     print(f"👀 بدء مراقبة القناة: {YOUTUBE_CHANNEL_HANDLE}")
@@ -60,28 +63,42 @@ def main():
     start_time = time.time()
     max_duration = 5.5 * 3600  # 5 ساعات ونصف
 
+    # ذاكرة لحفظ معرّفات الرسائل المرسلة ومنع التكرار نهائياً
+    processed_msg_ids = deque(maxlen=2000)
+
     while (time.time() - start_time) < max_duration:
-        print("🔍 جاري فحص البث المباشر...")
+        print("🔍 جاري فحص وجود بث مباشر حقيقي...")
         video_id = get_live_video_id(YOUTUBE_CHANNEL_HANDLE)
         
         if video_id:
-            print(f"🔴 تم اكتشاف بث مباشر! Video ID: {video_id}")
+            print(f"🔴 تم اكتشاف بث مباشر شغال الآن! ID: {video_id}")
             try:
                 chat = pytchat.create(video_id=video_id)
+                
                 while chat.is_alive() and (time.time() - start_time) < max_duration:
                     for c in chat.get().sync_items():
+                        # معرف فريد لكل رسالة
+                        msg_id = getattr(c, 'id', None) or f"{c.author.name}_{c.timestamp}_{c.message}"
+                        
+                        # تخطي الرسالة إذا تم إرسالها من قبل
+                        if msg_id in processed_msg_ids:
+                            continue
+                        
+                        # تسجيل الرسالة لمنع تكرارها
+                        processed_msg_ids.append(msg_id)
+                        
                         msg = c.message.strip()
                         
-                        # التقاط أي رسالة تحتوي على علامة استفهام عربية (؟) أو إنجليزية (?)
+                        # التقاط أي رسالة تحتوي على علامة استفهام
                         if "?" in msg or "؟" in msg:
-                            print(f"🎯 التقاط سؤال من [{c.author.name}]: {msg}")
+                            print(f"🎯 سؤال جديد من [{c.author.name}]: {msg}")
                             send_to_telegram(c.author.name, msg)
                             
                     time.sleep(1)
             except Exception as e:
                 print(f"❌ انقطع الاتصال بالشات: {e}")
         else:
-            print("⏳ لم يتم العثور على بث مباشر حالياً. إعادة الفحص بعد دقيقتين...")
+            print("⏳ لا يوجد بث مباشر شغال حالياً. إعادة الفحص بعد دقيقتين...")
             time.sleep(120)
 
 if __name__ == "__main__":
