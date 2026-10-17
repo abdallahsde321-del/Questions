@@ -1,3 +1,4 @@
+```yaml
 name: YouTube Live Questions Monitor
 
 on:
@@ -5,7 +6,7 @@ on:
     - cron: '0 */5 * * *'
   workflow_dispatch:
 
-# Prevent overlapping scheduled/manual runs. A newer run cancels the previous one.
+# منع تشغيل نسختين من البوت في نفس الوقت
 concurrency:
   group: youtube-live-questions-monitor
   cancel-in-progress: true
@@ -28,17 +29,29 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip uninstall -y pytchat pytchat-ng || true
+          python -m pip install -r requirements.txt
+
+      - name: Verify dependencies
+        run: |
+          python -m pip show pytchat-ng
+          python -c "import pytchat; print('pytchat import successful')"
 
       - name: Run Bot
         env:
           PYTHONUNBUFFERED: '1'
+
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           YOUTUBE_CHANNEL_ID: ${{ secrets.YOUTUBE_CHANNEL_ID }}
           YOUTUBE_CHANNEL_HANDLE: ${{ secrets.YOUTUBE_CHANNEL_HANDLE }}
+
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+
           CHECK_INTERVAL_SECONDS: '120'
           MAX_RUNTIME_SECONDS: '17400'
+
         run: python -u main.py
+```
