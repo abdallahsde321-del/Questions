@@ -116,7 +116,7 @@ def parse_message_renderer(renderer):
     return author, msg_text
 
 def monitor_live_chat(video_id, max_end_time, processed_ids, initial_continuation, api_key, client_ver):
-    print(f"🟢 تم الاتصال بشات البث الحقيقي ({video_id}) بنجاح! جاري المراقبة لحظة بلحظة...")
+    print(f"🟢 تم الاتصال بشات البث الحقيقي ({video_id}) بنجاح! جاري التقاط الرسائل التي تحتوي على 100...")
     
     innertube_url = f"https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key={api_key}" if api_key else "https://www.youtube.com/youtubei/v1/live_chat/get_live_chat"
     
@@ -155,7 +155,6 @@ def monitor_live_chat(video_id, max_end_time, processed_ids, initial_continuatio
             for action in actions:
                 item = action.get("addChatItemAction", {}).get("item", {})
                 
-                # فحص كافة صيغ مسارات الرسائل الممكنة في يوتيوب
                 renderer = (
                     item.get("liveChatMessageRenderer") or
                     item.get("liveChatTextMessageRenderer") or
@@ -174,9 +173,9 @@ def monitor_live_chat(video_id, max_end_time, processed_ids, initial_continuatio
                     if msg_text:
                         print(f"💬 [شات حي]: {author}: {msg_text}")
                         
-                        # التقاط أي سؤال يتضمن علامة استفهام
-                        if "?" in msg_text or "؟" in msg_text:
-                            print(f"🎯 تم التقاط سؤال جديد: {msg_text}")
+                        # التقاط أي رسالة تتضمن الرقم 100 بالإنجليزي أو ١٠٠ بالعربي
+                        if "100" in msg_text or "١٠٠" in msg_text:
+                            print(f"🎯 تم التقاط رسالة (100): {msg_text}")
                             send_to_telegram(msg_text)
 
             continuations = live_chat.get("continuations", [])
