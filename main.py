@@ -1,50 +1,39 @@
 import os
-import re
 import time
 from collections import deque
 import pytchat
 import requests
+import yt_dlp
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 YOUTUBE_CHANNEL_HANDLE = os.getenv("YOUTUBE_CHANNEL_HANDLE")
 
 def get_live_video_id(channel_handle):
-    """استخراج ID البث المباشر الحقيقي فقط بدقة عالية"""
+    """استخراج ID البث المباشر باستخدام yt-dlp لتجاوز حظر سيرفرات GitHub Actions"""
     handle = channel_handle if channel_handle.startswith("@") else f"@{channel_handle}"
     url = f"https://www.youtube.com/{handle}/live"
     
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
-        "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+667;"
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'skip_download': True,
+        'extract_flat': False,
     }
     
     try:
-        session = requests.Session()
-        response = session.get(url, headers=headers, timeout=15, allow_redirects=True)
-        
-        video_id = None
-        if "watch?v=" in response.url:
-            video_id = response.url.split("watch?v=")[1].split("&")[0]
-        else:
-            canonical_match = re.search(r'<link rel="canonical" href="https://www.youtube.com/watch\?v=([^"]+)"', response.text)
-            if canonical_match:
-                video_id = canonical_match.group(1)
-        
-        if video_id:
-            is_live_now = ('"isLiveNow":true' in response.text or '"isLive":true' in response.text or '"style":"LIVE"' in response.text)
-            is_upcoming = '"isUpcoming":true' in response.text
-            
-            if is_live_now and not is_upcoming:
-                return video_id
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            # التأكد من أن الفيديو بث مباشر شغال حالياً
+            if info and (info.get('is_live') or info.get('live_status') == 'is_live'):
+                return info.get('id')
     except Exception as e:
-        print(f"⚠️ خطأ أثناء البحث عن البث: {e}")
-    
+        print(f"⚠️ خطأ أثناء الفحص بـ yt-dlp: {e}")
+        
     return None
 
 def send_to_telegram(message):
-    """إرسال نص السؤال فقط بدون أي إضافات أو أسماء"""
+    """إرسال نص السؤال فقط بدون أية إضافات"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
     payload = {
@@ -65,12 +54,12 @@ def main():
     print(f"👀 بدء مراقبة القناة: {YOUTUBE_CHANNEL_HANDLE}")
     
     start_time = time.time()
-    max_duration = 5.5 * 3600  # 5 ساعات ونصف كحد أقصى للجلسة
+    max_duration = 5.5 * 3600  # 5 ساعات ونصف
 
     processed_msg_ids = deque(maxlen=5000)
 
     while (time.time() - start_time) < max_duration:
-        print("🔍 جاري فحص وجود بث مباشر شغال...")
+        print("🔍 جاري فحص وجود بث مباشر حقيقي...")
         video_id = get_live_video_id(YOUTUBE_CHANNEL_HANDLE)
         
         if video_id:
@@ -84,7 +73,7 @@ def main():
                     items = chat.get().sync_items()
                     
                     if first_fetch:
-                        # تسخين البوت بتجاهل الشات القديم
+                        # تسخين البوت بتجاهل الرسائل القديمة
                         for c in items:
                             msg_id = getattr(c, 'id', None) or f"{c.author.name}_{c.timestamp}_{c.message}"
                             processed_msg_ids.append(msg_id)
@@ -101,7 +90,7 @@ def main():
                         processed_msg_ids.append(msg_id)
                         msg = c.message.strip()
                         
-                        # التقاط أي سؤال يحتوي على علامة استفهام إنجليزية أو عربية
+                        # التقاط أي سؤال يحتوي على علامة استفهام عربية أو إنجليزية
                         if "?" in msg or "؟" in msg:
                             print(f"🎯 سؤال جديد: {msg}")
                             send_to_telegram(msg)
