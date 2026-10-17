@@ -5,9 +5,15 @@ on:
     - cron: '0 */5 * * *'
   workflow_dispatch:
 
+# Prevent overlapping scheduled/manual runs. A newer run cancels the previous one.
+concurrency:
+  group: youtube-live-questions-monitor
+  cancel-in-progress: true
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 290
 
     steps:
       - name: Checkout code
@@ -17,6 +23,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
@@ -28,6 +35,10 @@ jobs:
           PYTHONUNBUFFERED: '1'
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           YOUTUBE_CHANNEL_ID: ${{ secrets.YOUTUBE_CHANNEL_ID }}
+          YOUTUBE_CHANNEL_HANDLE: ${{ secrets.YOUTUBE_CHANNEL_HANDLE }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+          CHECK_INTERVAL_SECONDS: '120'
+          MAX_RUNTIME_SECONDS: '17400'
         run: python -u main.py
