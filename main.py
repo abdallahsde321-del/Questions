@@ -13,7 +13,7 @@ YOUTUBE_COOKIES = os.getenv("YOUTUBE_COOKIES")
 
 COOKIE_FILE = "cookies.txt"
 
-# 1. تهيئة الكوكيز إذا كانت متوفرة
+# 1. تحميل الكوكيز إن وجدت
 if YOUTUBE_COOKIES:
     with open(COOKIE_FILE, "w", encoding="utf-8") as f:
         f.write(YOUTUBE_COOKIES)
@@ -28,80 +28,95 @@ if os.path.exists(COOKIE_FILE):
     except Exception as e:
         print(f"⚠️ تعذر تحميل الكوكيز: {e}")
 
-# 2. إعداد هيدرز متصفح حقيقي وعميل يوتيوب
 BASE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept-Language": "ar,en-US;q=0.9,en;q=0.8"
 }
 
-def get_live_video_id(channel_handle):
-    """استخراج معرف البث المباشر بدقة مع دعم الكوكيز والهيدرز"""
+def get_real_live_video_id(channel_handle):
+    """استخراج معرف البث المباشر الحي فقط وتجاهل الفيديوهات المسجلة والمقترحة"""
     handle = channel_handle if channel_handle.startswith("@") else f"@{channel_handle}"
+    url = f"https://www.youtube.com/{handle}/live"
+    
+    try:
+        res = session.get(url, headers=BASE_HEADERS, timeout=12, allow_redirects=True)
+        text = res.text
+        
+        # 1. إذا تم التوجيه المباشر لرابط مشاهدة فيديو
+        if "watch?v=" in res.url:
+            v_id = res.url.split("watch?v=")[1].split("&")[0]
+            if '"isLiveNow":true' in text or '"isLive":true' in text or 'LIVE' in text:
+                return v_id
+
+        # 2. البحث عن ID الفيديو المقترن صراحة بـ isLiveNow في السورس
+        live_matches = re.findall(r'"videoId":"([^"]+)".{0,250}?"isLiveNow":true', text)
+        if live_matches:
+            return live_matches[0]
+            
+        live_matches_alt = re.findall(r'"isLiveNow":true.{0,250}?"videoId":"([^"]+)"', text)
+        if live_matches_alt:
+            return live_matches_alt[0]
+
+        # 3. التأكد العام من وجود بث حي
+        match = re.search(r'"videoId":"([^"]+)"', text)
+        if match:
+            v_id = match.group(1)
+            is_live = ('"isLive":true' in text or '"isLiveNow":true' in text or '"style":"LIVE"' in text)
+            is_upcoming = ('"isUpcoming":true' in text or '"status":"UNPLAYABLE"' in text)
+            if is_live and not is_upcoming:
+                return v_id
+    except Exception as e:
+        print(f"⚠️ خطأ أثناء البحث عن رابط البث: {e}")
+
+    # محاولة احتياطية بـ yt-dlp
+    try:
+        ydl_opts = {'quiet': True, 'no_warnings': True, 'skip_download': True}
+        if os.path.exists(COOKIE_FILE):
+            ydl_opts['cookiefile'] = COOKIE_FILE
+            
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/{handle}/live", download=False)
+            if info and (info.get('is_live') or info.get('live_status') == 'is_live'):
+                return info.get('id')
+    except Exception as e:
+        print(f"⚠️ خطأ yt-dlp: {e}")
+
+    return None
+
+def get_chat_init_data(video_id):
+    """استخراج رمز الشات ومفتاح API مع تجربة عدة روابط لضمان الاتصال"""
     urls = [
-        f"https://www.youtube.com/{handle}/live",
-        f"https://m.youtube.com/{handle}/live"
+        f"https://www.youtube.com/live_chat?v={video_id}",
+        f"https://www.youtube.com/watch?v={video_id}"
     ]
     
     for url in urls:
         try:
-            res = session.get(url, headers=BASE_HEADERS, timeout=12, allow_redirects=True)
-            text = res.text
-            
-            if "watch?v=" in res.url:
-                return res.url.split("watch?v=")[1].split("&")[0]
-            
-            match = re.search(r'"videoId":"([^"]+)"', text)
-            if match:
-                is_live = ('"isLive":true' in text or '"isLiveNow":true' in text or 'LIVE' in text)
-                is_upcoming = ('"isUpcoming":true' in text or '"status":"UNPLAYABLE"' in text)
-                if is_live and not is_upcoming:
-                    return match.group(1)
+            res = session.get(url, headers=BASE_HEADERS, timeout=10)
+            if res.status_code == 200:
+                text = res.text
+                key_match = re.search(r'"INNERTUBE_API_KEY":"([^"]+)"', text)
+                api_key = key_match.group(1) if key_match else ""
+
+                ver_match = re.search(r'"clientVersion":"([^"]+)"', text)
+                client_ver = ver_match.group(1) if ver_match else "2.20240301.00.00"
+
+                conts = re.findall(r'"continuation":"([^"]+)"', text)
+                continuation = None
+                for c in conts:
+                    if len(c) > 20:
+                        continuation = c
+                        break
+
+                if continuation:
+                    return continuation, api_key, client_ver
         except Exception as e:
-            print(f"⚠️ خطأ أثناء جلب الرابط ({url}): {e}")
+            print(f"⚠️ خطأ أثناء جلب الشات من ({url}): {e}")
 
-    # محاولة احتياطية بأداة yt-dlp مع ملف الكوكيز
-    ydl_opts = {'quiet': True, 'no_warnings': True, 'skip_download': True}
-    if os.path.exists(COOKIE_FILE):
-        ydl_opts['cookiefile'] = COOKIE_FILE
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"https://www.youtube.com/{handle}/live", download=False)
-            if info and info.get('id'):
-                return info.get('id')
-    except Exception as e:
-        print(f"⚠️ خطأ yt-dlp: {e}")
-        
-    return None
-
-def get_chat_init_data(video_id):
-    """استخراج مفتاح API ورمز التتبع للشات مع الكوكيز"""
-    url = f"https://www.youtube.com/live_chat?v={video_id}"
-    try:
-        res = session.get(url, headers=BASE_HEADERS, timeout=10)
-        if res.status_code == 200:
-            text = res.text
-            key_match = re.search(r'"INNERTUBE_API_KEY":"([^"]+)"', text)
-            api_key = key_match.group(1) if key_match else ""
-
-            ver_match = re.search(r'"clientVersion":"([^"]+)"', text)
-            client_ver = ver_match.group(1) if ver_match else "2.20240301.00.00"
-
-            conts = re.findall(r'"continuation":"([^"]+)"', text)
-            continuation = None
-            for c in conts:
-                if len(c) > 20:
-                    continuation = c
-                    break
-
-            return continuation, api_key, client_ver
-    except Exception as e:
-        print(f"⚠️ خطأ جلب بيانات الشات: {e}")
-        
     return None, "", "2.20240301.00.00"
 
 def send_to_telegram(message):
-    """إرسال نص الرسالة فقط لتلجرام مجرداً من أي أسماء أو إضافات"""
+    """إرسال النص مجرداً فقط بدون أسماء أو إضافات"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -134,9 +149,8 @@ def parse_message_renderer(renderer):
     return author, msg_text
 
 def monitor_live_chat(video_id, max_end_time, processed_ids, initial_continuation, api_key, client_ver):
-    print(f"🟢 تم الربط بشات البث الحي ({video_id}) بالدمج الكامل (الكوكيز + الجلسة)! جاري المراقبة...")
+    print(f"🟢 تم الربط بشات البث الحي الحقيقي ({video_id}) بنجاح! جاري المراقبة...")
     
-    # استخدام مفتاح API لمنع أخطاء 400 Bad Request
     if api_key:
         innertube_url = f"https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key={api_key}"
     else:
@@ -195,9 +209,9 @@ def monitor_live_chat(video_id, max_end_time, processed_ids, initial_continuatio
                     if msg_text:
                         print(f"💬 [شات حي]: {author}: {msg_text}")
                         
-                        # التقاط أي رسالة تتضمن الرقم 100 بالإنجليزية أو ١٠٠ بالعربية
+                        # التقاط الرسالة إذا احتوت على 100 أو ١٠٠
                         if "100" in msg_text or "١٠٠" in msg_text:
-                            print(f"🎯 تم التقاط رسالة تحتوي على (100): {msg_text}")
+                            print(f"🎯 تم التقاط رسالة (100): {msg_text}")
                             send_to_telegram(msg_text)
 
             continuations = live_chat.get("continuations", [])
@@ -210,7 +224,7 @@ def monitor_live_chat(video_id, max_end_time, processed_ids, initial_continuatio
                         break
 
             if time.time() - last_heartbeat > 30:
-                print("📡 البوت متصل ومستمر في الاستماع لشات البث المباشر...")
+                print("📡 البوت متصل ويستمع لشات البث المباشر الآن...")
                 last_heartbeat = time.time()
 
         except Exception as e:
@@ -227,7 +241,7 @@ def main():
 
     while (time.time() - start_time) < max_duration:
         print("🔍 جاري فحص وجود بث مباشر حقيقي...")
-        video_id = get_live_video_id(YOUTUBE_CHANNEL_HANDLE)
+        video_id = get_real_live_video_id(YOUTUBE_CHANNEL_HANDLE)
         
         if video_id:
             continuation, api_key, client_ver = get_chat_init_data(video_id)
@@ -235,9 +249,9 @@ def main():
                 print(f"🔴 تم العثور على بث مباشر حقيقي وشغال! Video ID: {video_id}")
                 monitor_live_chat(video_id, start_time + max_duration, processed_ids, continuation, api_key, client_ver)
             else:
-                print(f"⏳ الفيديو المكتشف ({video_id}) ليس بثاً حياً أو الشات غير متاح حالياً. إعادة الفحص بعد دقيقتين...")
+                print(f"⏳ الفيديو المكتشف ({video_id}) ليس بثاً حياً نَشِطاً. إعادة الفحص...")
         else:
-            print("⏳ لا يوجد بث مباشر حالياً. إعادة الفحص بعد دقيقتين...")
+            print("⏳ لا يوجد بث مباشر حقيقي حالياً. إعادة الفحص بعد دقيقتين...")
         
         time.sleep(120)
 
