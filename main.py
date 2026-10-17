@@ -3,7 +3,6 @@ import re
 import time
 from collections import deque
 import requests
-import yt_dlp
 
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 YOUTUBE_CHANNEL_HANDLE = os.getenv("YOUTUBE_CHANNEL_HANDLE") or os.getenv("YOUTUBE_CHANNEL_ID")
@@ -15,7 +14,8 @@ HEADERS = {
     "Accept-Language": "ar,en-US;q=0.9,en;q=0.8"
 }
 
-def fetch_video_id_requests(target):
+def fetch_video_id(target):
+    """استخراج معرف الفيديو للبث المباشر"""
     if target.startswith("UC") and len(target) == 24:
         url = f"https://www.youtube.com/channel/{target}/live"
     else:
@@ -24,94 +24,58 @@ def fetch_video_id_requests(target):
 
     try:
         res = requests.get(url, headers=HEADERS, timeout=10, allow_redirects=True)
-        print(f"🔹 رابط الفحص الحالي: {res.url} (كود الاستجابة: {res.status_code})")
-        
         if "watch?v=" in res.url:
             return res.url.split("watch?v=")[1].split("&")[0]
-        
         match = re.search(r'"videoId":"([^"]+)"', res.text)
         if match:
             return match.group(1)
     except Exception as e:
-        print(f"⚠️ خطأ أثناء طلب الرابط المباشر: {e}")
+        print(f"⚠️ خطأ أثناء استخراج Video ID: {e}")
     return None
 
-def fetch_video_id_ytdlp(target):
-    handle = target if target.startswith("@") else f"@{target}"
-    url = f"https://www.youtube.com/{handle}/live"
-    ydl_opts = {'quiet': True, 'no_warnings': True, 'skip_download': True}
+def get_innertube_continuation(video_id):
+    """استخراج رمز التتبع للشات المباشر عبر InnerTube"""
+    url = f"https://www.youtube.com/live_chat?v={video_id}"
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if info and info.get('id'):
-                return info.get('id')
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        if res.status_code == 200:
+            text = res.text
+            key_match = re.search(r'"INNERTUBE_API_KEY":"([^"]+)"', text)
+            api_key = key_match.group(1) if key_match else ""
+            ver_match = re.search(r'"clientVersion":"([^"]+)"', text)
+            client_ver = ver_match.group(1) if ver_match else "2.20240301.00.00"
+            conts = re.findall(r'"continuation":"([^"]+)"', text)
+            continuation = None
+            for c in conts:
+                if len(c) > 20:
+                    continuation = c
+                    break
+            return continuation, api_key, client_ver
     except Exception as e:
-        print(f"⚠️ خطأ yt-dlp: {e}")
-    return None
+        print(f"⚠️ خطأ جلب بيانات InnerTube: {e}")
+    return None, "", "2.20240301.00.00"
 
-def get_live_chat_id():
-    target = YOUTUBE_CHANNEL_HANDLE
-    if not target:
-        print("❌ خطأ قاتل: لم يتم العثور على YOUTUBE_CHANNEL_HANDLE أو YOUTUBE_CHANNEL_ID في GitHub Secrets!")
-        return None, None
-
-    print(f"📌 الهدف المراد مراقبته: {target}")
-    
-    # 1. جلب Video ID عبر requests أو yt-dlp
-    video_id = fetch_video_id_requests(target)
-    if not video_id:
-        print("🔄 تعذر الجلب المباشر، جاري المحاولة باستخدام yt-dlp...")
-        video_id = fetch_video_id_ytdlp(target)
-
-    if not video_id:
-        print("❌ لم نتمكن من استخراج أي Video ID من صفحة القناة.")
-        return None, None
-
-    print(f"🔎 تم التقاط Video ID: {video_id} - جاري الفحص عبر Google API...")
-
+def get_google_api_chat_id(video_id):
+    """التحقق وجلب Chat ID عبر Google API الرسمية"""
     if not YOUTUBE_API_KEY:
-        print("❌ خطأ قاتل: YOUTUBE_API_KEY غير موجود في Secrets!")
-        return None, None
-
-    # 2. التحقق من حالة البث عبر API واستخراج الشات
+        return None
     api_url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,liveStreamingDetails&id={video_id}&key={YOUTUBE_API_KEY}"
     try:
         res = requests.get(api_url, timeout=10)
-        if res.status_code != 200:
-            print(f"❌ خطأ من Google API ({res.status_code}): {res.text}")
-            return None, None
-
-        data = res.json()
-        items = data.get("items", [])
-        if not items:
-            print(f"⚠️ Google API لم يجد أي بيانات لهذا الفيديو ({video_id}).")
-            return None, None
-
-        item = items[0]
-        snippet = item.get("snippet", {})
-        live_status = snippet.get("liveBroadcastContent")
-        live_details = item.get("liveStreamingDetails", {})
-        chat_id = live_details.get("activeLiveChatId")
-
-        print(f"📊 حالة البث من Google API: [{live_status}] | Chat ID: [{chat_id}]")
-
-        if live_status == "live" and chat_id:
-            return video_id, chat_id
-        else:
-            print(f"⚠️ الفيديو {video_id} ليس بثاً مباشراً حياً الآن، أو أن الشات مغلق.")
-
+        if res.status_code == 200:
+            data = res.json()
+            items = data.get("items", [])
+            if items:
+                live_details = items[0].get("liveStreamingDetails", {})
+                return live_details.get("activeLiveChatId")
     except Exception as e:
-        print(f"❌ خطأ أثناء الاتصال بـ Google API: {e}")
-
-    return None, None
+        print(f"⚠️ خطأ Google API: {e}")
+    return None
 
 def send_to_telegram(message):
-    """إرسال نص الرسالة فقط لتلجرام مجرداً من أي إضافات"""
+    """إرسال النص المكتشف إلى التلجرام مجرداً"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message
-    }
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try:
         res = requests.post(url, json=payload, timeout=10)
         if res.status_code == 200:
@@ -121,74 +85,138 @@ def send_to_telegram(message):
     except Exception as e:
         print(f"❌ خطأ اتصال بتلجرام: {e}")
 
-def monitor_live_chat(video_id, live_chat_id, max_end_time, processed_ids):
-    print(f"🟢 تم الاتصال بشات البث الحي ({video_id}) بنجاح! جاري الاستماع للرقم 100...")
-    
-    next_page_token = None
+def monitor_innertube(video_id, max_end_time, processed_ids, initial_continuation, api_key, client_ver):
+    """مراقبة الشات عبر نظام InnerTube الاحتياطي"""
+    print(f"🟢 تم الربط بشات البث عبر InnerTube ({video_id})! جاري التقاط الرقم 100...")
+    innertube_url = f"https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key={api_key}" if api_key else "https://www.youtube.com/youtubei/v1/live_chat/get_live_chat"
+    chat_headers = HEADERS.copy()
+    chat_headers.update({
+        "Content-Type": "application/json",
+        "X-YouTube-Client-Name": "1",
+        "X-YouTube-Client-Version": client_ver
+    })
+    session = requests.Session()
+    continuation = initial_continuation
     last_heartbeat = time.time()
 
+    while time.time() < max_end_time and continuation:
+        payload = {
+            "context": {"client": {"clientName": "WEB", "clientVersion": client_ver}},
+            "continuation": continuation
+        }
+        try:
+            res = session.post(innertube_url, json=payload, headers=chat_headers, timeout=10)
+            if res.status_code != 200:
+                time.sleep(3)
+                continue
+            data = res.json()
+            live_chat = data.get("continuationContents", {}).get("liveChatContinuation", {})
+            actions = live_chat.get("actions", [])
+            for action in actions:
+                item = action.get("addChatItemAction", {}).get("item", {})
+                renderer = item.get("liveChatMessageRenderer") or item.get("liveChatTextMessageRenderer") or item.get("liveChatPaidMessageRenderer")
+                if renderer:
+                    msg_id = renderer.get("id", "")
+                    if msg_id and msg_id in processed_ids:
+                        continue
+                    if msg_id:
+                        processed_ids.append(msg_id)
+                    author = renderer.get("authorName", {}).get("simpleText", "مستخدم")
+                    runs = renderer.get("message", {}).get("runs", [])
+                    msg_text = "".join([r.get("text", "") for r in runs]).strip()
+                    if msg_text:
+                        print(f"💬 [شات حي]: {author}: {msg_text}")
+                        if "100" in msg_text or "١٠٠" in msg_text:
+                            print(f"🎯 تم التقاط رسالة (100): {msg_text}")
+                            send_to_telegram(msg_text)
+
+            continuations = live_chat.get("continuations", [])
+            continuation = None
+            if continuations:
+                cont_data = continuations[0]
+                for key in ["timedContinuationData", "invalidationContinuationData", "liveChatReplayContinuationData", "reloadContinuationData"]:
+                    if key in cont_data and "continuation" in cont_data[key]:
+                        continuation = cont_data[key]["continuation"]
+                        break
+            if time.time() - last_heartbeat > 30:
+                print("📡 البوت متصل ويستمع لشات البث المباشر الآن...")
+                last_heartbeat = time.time()
+        except Exception as e:
+            print(f"❌ خطأ أثناء قراءة الشات: {e}")
+            time.sleep(3)
+        time.sleep(2)
+
+def monitor_google_api(video_id, live_chat_id, max_end_time, processed_ids):
+    """مراقبة الشات عبر Google API الرسمية"""
+    print(f"🟢 تم الربط بشات البث عبر Google API ({video_id})! جاري التقاط الرقم 100...")
+    next_page_token = None
+    last_heartbeat = time.time()
     while time.time() < max_end_time:
         chat_url = f"https://www.googleapis.com/youtube/v3/liveChat/messages?liveChatId={live_chat_id}&part=snippet,authorDetails&key={YOUTUBE_API_KEY}"
         if next_page_token:
             chat_url += f"&pageToken={next_page_token}"
-
         try:
             res = requests.get(chat_url, timeout=10)
             if res.status_code != 200:
-                print(f"⚠️ استجابة غير متوقعة من API الشات: {res.status_code}")
                 time.sleep(5)
                 continue
-
             data = res.json()
             next_page_token = data.get("nextPageToken")
             polling_interval = data.get("pollingIntervalMillis", 2000) / 1000.0
-
             items = data.get("items", [])
             for item in items:
                 msg_id = item.get("id")
                 if msg_id in processed_ids:
                     continue
                 processed_ids.append(msg_id)
-
                 snippet = item.get("snippet", {})
                 author_details = item.get("authorDetails", {})
-                
                 author = author_details.get("displayName", "مستخدم")
                 msg_text = snippet.get("displayMessage", "").strip()
-
                 if msg_text:
                     print(f"💬 [شات حي]: {author}: {msg_text}")
-                    
                     if "100" in msg_text or "١٠٠" in msg_text:
                         print(f"🎯 تم التقاط رسالة (100): {msg_text}")
                         send_to_telegram(msg_text)
-
             if time.time() - last_heartbeat > 30:
                 print("📡 البوت متصل ومستمر في قراءة الشات...")
                 last_heartbeat = time.time()
-
             time.sleep(max(polling_interval, 2.0))
-
         except Exception as e:
             print(f"❌ خطأ أثناء قراءة الشات عبر API: {e}")
             time.sleep(5)
 
 def main():
-    print("👀 بدء تشغيل نظام مراقبة البث مع سجلات التتبع الدقيقة...")
+    print("👀 بدء تشغيل نظام المراقبة الهجين...")
     start_time = time.time()
     max_duration = 5.5 * 3600
     processed_ids = deque(maxlen=5000)
 
     while (time.time() - start_time) < max_duration:
-        print("\n🔍 جاري فحص حالة البث المباشر والقناة...")
-        video_id, live_chat_id = get_live_chat_id()
-        
-        if video_id and live_chat_id:
-            print(f"🔴 تم الربط بنجاح! Video ID: {video_id} | Chat ID: {live_chat_id}")
-            monitor_live_chat(video_id, live_chat_id, start_time + max_duration, processed_ids)
+        target = YOUTUBE_CHANNEL_HANDLE
+        if not target:
+            print("❌ لم يتم العثور على YOUTUBE_CHANNEL_HANDLE أو YOUTUBE_CHANNEL_ID!")
+            time.sleep(120)
+            continue
+
+        video_id = fetch_video_id(target)
+        if video_id:
+            print(f"🎯 تم التقاط Video ID: {video_id}")
+            # 1. المحاولة الأولى عبر Google API
+            live_chat_id = get_google_api_chat_id(video_id)
+            if live_chat_id:
+                monitor_google_api(video_id, live_chat_id, start_time + max_duration, processed_ids)
+            else:
+                # 2. التبديل التلقائي لـ InnerTube في حال تعذر الحصول على Chat ID من Google API
+                print("🔄 لم نتمكن من الحصول على Chat ID من Google API، جاري الانتقال التلقائي إلى نظام InnerTube...")
+                continuation, api_key, client_ver = get_innertube_continuation(video_id)
+                if continuation:
+                    monitor_innertube(video_id, start_time + max_duration, processed_ids, continuation, api_key, client_ver)
+                else:
+                    print(f"⏳ تعذر الحصول على رمز الشات للفيديو ({video_id}). إعادة الفحص...")
         else:
-            print("⏳ سنعيد الفحص بعد دقيقتين...")
-        
+            print("⏳ لا يوجد بث مباشر حقيقي حالياً. إعادة الفحص بعد دقيقتين...")
+
         time.sleep(120)
 
 if __name__ == "__main__":
