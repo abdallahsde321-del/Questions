@@ -13,7 +13,7 @@ YOUTUBE_COOKIES = os.getenv("YOUTUBE_COOKIES")
 
 COOKIE_FILE = "cookies.txt"
 
-# إنشاء ملف الكوكيز عند التشغيل إذا كان الـ Secret موجوداً
+# إنشاء ملف الكوكيز عند التشغيل
 if YOUTUBE_COOKIES:
     with open(COOKIE_FILE, "w", encoding="utf-8") as f:
         f.write(YOUTUBE_COOKIES)
@@ -25,7 +25,7 @@ if os.path.exists(COOKIE_FILE):
         cj.load(ignore_discard=True, ignore_expires=True)
         session.cookies = cj
     except Exception as e:
-        print(f"⚠️ تعذر تحميل ملف الكوكيز: {e}")
+        print(f"⚠️ تعذر تحميل الكوكيز: {e}")
 
 BASE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -46,11 +46,7 @@ def get_live_video_id(channel_handle):
     except Exception as e:
         print(f"⚠️ خطأ أثناء جلب رابط البث: {e}")
 
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'skip_download': True,
-    }
+    ydl_opts = {'quiet': True, 'no_warnings': True, 'skip_download': True}
     if os.path.exists(COOKIE_FILE):
         ydl_opts['cookiefile'] = COOKIE_FILE
 
@@ -102,8 +98,25 @@ def send_to_telegram(message):
     except Exception as e:
         print(f"❌ خطأ اتصال بتلجرام: {e}")
 
+def parse_message_renderer(renderer):
+    if not renderer:
+        return "", ""
+    
+    author = "مستخدم"
+    if "authorName" in renderer:
+        author = renderer["authorName"].get("simpleText", "مستخدم")
+        
+    msg_text = ""
+    message_obj = renderer.get("message", {})
+    if "runs" in message_obj:
+        msg_text = "".join([r.get("text", "") for r in message_obj["runs"]]).strip()
+    elif "simpleText" in message_obj:
+        msg_text = message_obj["simpleText"].strip()
+        
+    return author, msg_text
+
 def monitor_live_chat(video_id, max_end_time, processed_ids, initial_continuation, api_key, client_ver):
-    print(f"🟢 تم الاتصال بشات البث الحقيقي ({video_id}) باستخدام الكوكيز بنجاح!")
+    print(f"🟢 تم الاتصال بشات البث الحقيقي ({video_id}) بنجاح! جاري المراقبة لحظة بلحظة...")
     
     innertube_url = f"https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key={api_key}" if api_key else "https://www.youtube.com/youtubei/v1/live_chat/get_live_chat"
     
@@ -141,7 +154,13 @@ def monitor_live_chat(video_id, max_end_time, processed_ids, initial_continuatio
 
             for action in actions:
                 item = action.get("addChatItemAction", {}).get("item", {})
-                renderer = item.get("liveChatMessageRenderer") or item.get("liveChatPaidMessageRenderer")
+                
+                # فحص كافة صيغ مسارات الرسائل الممكنة في يوتيوب
+                renderer = (
+                    item.get("liveChatMessageRenderer") or
+                    item.get("liveChatTextMessageRenderer") or
+                    item.get("liveChatPaidMessageRenderer")
+                )
                 
                 if renderer:
                     msg_id = renderer.get("id", "")
@@ -150,13 +169,12 @@ def monitor_live_chat(video_id, max_end_time, processed_ids, initial_continuatio
                     if msg_id:
                         processed_ids.append(msg_id)
 
-                    runs = renderer.get("message", {}).get("runs", [])
-                    msg_text = "".join([r.get("text", "") for r in runs]).strip()
-                    author = renderer.get("authorName", {}).get("simpleText", "مستخدم")
+                    author, msg_text = parse_message_renderer(renderer)
 
                     if msg_text:
-                        print(f"💬 [شات]: {author}: {msg_text}")
+                        print(f"💬 [شات حي]: {author}: {msg_text}")
                         
+                        # التقاط أي سؤال يتضمن علامة استفهام
                         if "?" in msg_text or "؟" in msg_text:
                             print(f"🎯 تم التقاط سؤال جديد: {msg_text}")
                             send_to_telegram(msg_text)
