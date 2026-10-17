@@ -1,0 +1,32 @@
+name: YouTube Live Questions Monitor
+
+on:
+  schedule:
+    # إعادة تشغيل البوت كل 5 ساعات ليعمل بشكل مستمر 24/7
+    - cron: '0 */5 * * *'
+  workflow_dispatch: # يتيح لك تشغيله يدوياً في أي وقت بضغطة زر
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          YOUTUBE_CHANNEL_HANDLE: ${{ secrets.YOUTUBE_CHANNEL_HANDLE }}
+        run: python main.py
